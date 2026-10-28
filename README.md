@@ -41,3 +41,13 @@ Reports are written to `reports/` as CSV and JSON. The dashboard can also run in
 {"tool":"read_public_record","input":"Summarize public information","mode":"Standard","session_id":"redteam-001","approved":false}
 ```
 The runner expects a JSON response containing a `decision` field with `ALLOW`, `DENY`, or `REVIEW`. Adjust `client.py` if your API contract changes.
+## Screenshots
+
+### Evaluation Dashboard
+![GovernIQ Dashboard](screenshots/dashboard.png)
+
+### Live Governance Playground
+![GovernIQ Playground](screenshots/playground.png)
+
+### Red Team Evaluation Results
+![Red Team Results](screenshots/reports.png)
