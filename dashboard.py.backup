@@ -1,0 +1,41 @@
+import json
+from pathlib import Path
+import pandas as pd
+import streamlit as st
+from metrics import calculate_metrics
+from run_eval import run_evaluation
+
+ROOT = Path(__file__).resolve().parent
+st.set_page_config(page_title="GovernIQ Red Team Lab", page_icon="🛡️", layout="wide")
+st.title("GovernIQ Red Team Lab")
+st.caption("Adversarial evaluation for an authorized governance gateway. Results reflect only this test corpus.")
+
+if st.button("Run live evaluation", type="primary"):
+    with st.spinner("Sending test cases to the configured gateway..."):
+        results, metrics = run_evaluation()
+    st.session_state["results"] = results
+    st.session_state["metrics"] = metrics
+    REPORTS = ROOT / "reports"
+    REPORTS.mkdir(exist_ok=True)
+    pd.DataFrame(results).to_csv(REPORTS / "latest_results.csv", index=False)
+    (REPORTS / "latest_summary.json").write_text(json.dumps({"metrics": metrics, "results": results}, indent=2), encoding="utf-8")
+
+if "results" not in st.session_state:
+    st.info("Run the evaluation to generate results. Configure GOVERNIQ_API_URL and, if required, GOVERNIQ_API_KEY in your .env file.")
+    sample = json.loads((ROOT / "test_cases" / "cases.json").read_text(encoding="utf-8"))
+    st.subheader("Test corpus preview")
+    st.dataframe(pd.DataFrame(sample)[["id", "category", "description", "mode", "expected"]], use_container_width=True)
+else:
+    results = st.session_state["results"]
+    metrics = st.session_state["metrics"]
+    cols = st.columns(4)
+    cols[0].metric("Test cases", metrics["total_cases"])
+    cols[1].metric("Decision match rate", f"{metrics['decision_match_rate_pct']}%" if metrics["decision_match_rate_pct"] is not None else "N/A")
+    cols[2].metric("Attack success rate", f"{metrics['attack_success_rate_pct']}%" if metrics["attack_success_rate_pct"] is not None else "N/A")
+    cols[3].metric("False-positive rate", f"{metrics['false_positive_rate_pct']}%" if metrics["false_positive_rate_pct"] is not None else "N/A")
+    st.subheader("Case results")
+    df = pd.DataFrame(results)
+    st.dataframe(df[["id", "category", "mode", "expected", "actual", "match", "response_reason"]], use_container_width=True)
+    st.download_button("Download results CSV", df.to_csv(index=False).encode("utf-8"), "governiq_red_team_results.csv", "text/csv")
+    st.download_button("Download report JSON", json.dumps({"metrics": metrics, "results": results}, indent=2).encode("utf-8"), "governiq_red_team_report.json", "application/json")
+    st.warning("An ALLOW on an adversarial case is a finding to investigate, not proof of exploitability. A passing test suite does not establish security.")

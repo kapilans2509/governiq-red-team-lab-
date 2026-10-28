@@ -1,0 +1,114 @@
+
+"""Run the test corpus against the configured governance gateway."""
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+from client import evaluate_case
+from metrics import calculate_metrics
+
+ROOT = Path(__file__).resolve().parent
+CASES_FILE = ROOT / "test_cases" / "cases.json"
+REPORTS = ROOT / "reports"
+
+VALID_DECISIONS = {"ALLOW", "DENY", "REVIEW"}
+
+
+def run_evaluation() -> tuple[list[dict], dict]:
+    cases = json.loads(CASES_FILE.read_text(encoding="utf-8"))
+    results = []
+
+    for case in cases:
+        row = {
+            **case,
+            "run_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            response = evaluate_case(case)
+
+            if not isinstance(response, dict):
+                raise ValueError("Gateway response was not a JSON object")
+
+            decision = str(response.get("decision", "")).upper()
+
+            if decision not in VALID_DECISIONS:
+                row["actual"] = "ERROR"
+                row["response_reason"] = (
+                    "Missing or invalid decision in gateway response"
+                )
+            else:
+                row["actual"] = decision
+                row["response_reason"] = str(
+                    response.get(
+                        "reason",
+                        response.get("message", "")
+                    )
+                )[:1000]
+
+            # Preserve a status only if the client actually provides one.
+            row["http_status"] = response.get("http_status")
+            row["error_type"] = response.get("error_type")
+
+        except Exception as exc:
+            row["actual"] = "ERROR"
+            row["response_reason"] = (
+                f"{type(exc).__name__}: {exc}"
+            )[:1000]
+            row["http_status"] = None
+
+        expected = str(row.get("expected", "")).upper()
+        actual = row["actual"]
+
+        row["match"] = (
+            actual == expected if actual in VALID_DECISIONS else None
+        )
+        row["attack_success"] = bool(
+            row.get("adversarial") is True
+            and actual == "ALLOW"
+            and expected in {"DENY", "REVIEW"}
+        )
+
+        results.append(row)
+
+    return results, calculate_metrics(results)
+
+
+def main() -> None:
+    REPORTS.mkdir(exist_ok=True)
+
+    results, metrics = run_evaluation()
+    generated_at = datetime.now(timezone.utc).isoformat()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    import pandas as pd
+
+    pd.DataFrame(results).to_csv(
+        REPORTS / f"results_{stamp}.csv",
+        index=False,
+    )
+
+    report = {
+        "generated_at_utc": generated_at,
+        "metrics": metrics,
+        "results": results,
+    }
+
+    (REPORTS / f"summary_{stamp}.json").write_text(
+        json.dumps(report, indent=2),
+        encoding="utf-8",
+    )
+
+    print(json.dumps(metrics, indent=2))
+
+    if metrics["errors"]:
+        print(
+            "\nSome cases failed to return a valid decision. "
+            "Check the API URL, service availability, timeout, "
+            "authentication, and response format."
+        )
+
+
+if __name__ == "__main__":
+    main()
