@@ -1,338 +1,246 @@
 
-"""GovernIQ Red Team Lab security evaluation dashboard."""
-
 import json
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from findings import generate_findings
+from client import evaluate_case
+from metrics import calculate_metrics
 from run_eval import run_evaluation
-from report_writer import write_reports
-
 
 ROOT = Path(__file__).resolve().parent
 REPORTS = ROOT / "reports"
 CASES_FILE = ROOT / "test_cases" / "cases.json"
+API_URL = "https://governiq-agent-governance.onrender.com"
 
 st.set_page_config(
-    page_title="GovernIQ Red Team Lab",
+    page_title="GovernIQ | AI Governance",
     page_icon="🛡️",
     layout="wide",
 )
 
-st.title("GovernIQ Red Team Lab")
-st.caption(
-    "Adversarial evaluation for an authorized governance gateway. "
-    "Findings are rule-based triage signals, not proof of exploitability."
+st.title("GovernIQ")
+st.caption("AI Agent Governance and Adversarial Security Evaluation")
+
+dashboard_tab, playground_tab, reports_tab = st.tabs(
+    ["Dashboard", "Live Playground", "Reports"]
 )
 
+# ---------------- DASHBOARD ----------------
 
-def display_percent(value):
-    """Format an optional percentage."""
-    return f"{value}%" if value is not None else "N/A"
+with dashboard_tab:
+    st.subheader("Red Team Evaluation")
 
-
-def load_test_cases():
-    """Load the configured test corpus safely."""
-    try:
-        with CASES_FILE.open("r", encoding="utf-8") as file:
-            cases = json.load(file)
-
-        if not isinstance(cases, list):
-            raise ValueError("The test corpus must be a JSON list.")
-
-        return cases
-
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        st.error(f"Could not load the test corpus: {exc}")
-        return []
-
-
-# Run evaluation
-if st.button("Run live evaluation", type="primary"):
-    try:
-        with st.spinner("Evaluating test cases against the configured gateway..."):
+    if st.button("Run live evaluation", type="primary"):
+        with st.spinner("Evaluating test cases against GovernIQ..."):
             results, metrics = run_evaluation()
-            findings = generate_findings(results)
 
-            report_paths = write_reports(
-                results=results,
-                metrics=metrics,
-                reports_dir=REPORTS,
+            REPORTS.mkdir(exist_ok=True)
+            df = pd.DataFrame(results)
+            df.to_csv(REPORTS / "latest_results.csv", index=False)
+
+            report = {
+                "metrics": metrics,
+                "results": results,
+            }
+            (REPORTS / "latest_summary.json").write_text(
+                json.dumps(report, indent=2),
+                encoding="utf-8",
             )
 
-        st.session_state["results"] = results
-        st.session_state["metrics"] = metrics
-        st.session_state["findings"] = findings
+            st.session_state["results"] = results
+            st.session_state["metrics"] = metrics
 
-        st.success(
-            f"Evaluation completed: {len(results)} cases, "
-            f"{len(findings)} findings."
+    if "metrics" not in st.session_state:
+        summary_path = REPORTS / "latest_summary.json"
+
+        if summary_path.exists():
+            try:
+                saved = json.loads(
+                    summary_path.read_text(encoding="utf-8")
+                )
+                st.session_state["metrics"] = saved.get(
+                    "metrics", saved
+                )
+                st.session_state["results"] = saved.get("results", [])
+            except (ValueError, OSError):
+                st.warning("Could not read the saved summary report.")
+
+    metrics = st.session_state.get("metrics", {})
+    results = st.session_state.get("results", [])
+
+    if metrics:
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("Test Cases", metrics.get("total_cases", 0))
+        c2.metric(
+            "Decision Agreement",
+            f"{metrics.get('decision_match_rate_pct', 0)}%",
+        )
+        c3.metric(
+            "Attack Success Rate",
+            f"{metrics.get('attack_success_rate_pct', 0)}%",
+        )
+        c4.metric(
+            "API Errors",
+            metrics.get("errors", 0),
         )
 
-    except Exception as exc:
-        st.error(f"Evaluation failed: {exc}")
+        c5, c6, c7 = st.columns(3)
+        c5.metric(
+            "Adversarial Cases",
+            metrics.get("adversarial_cases", 0),
+        )
+        c6.metric(
+            "Successful Attacks",
+            metrics.get("attack_successes", 0),
+        )
+        c7.metric(
+            "False Positive Rate",
+            f"{metrics.get('false_positive_rate_pct', 0)}%",
+        )
 
+        if results:
+            df = pd.DataFrame(results)
 
-# Initial screen
-if "results" not in st.session_state:
-    st.info(
-        "Run an evaluation to populate the dashboard. "
-        "Configure GOVERNIQ_API_URL and, if required, "
-        "GOVERNIQ_API_KEY in your .env file."
-    )
+            st.subheader("Decision Distribution")
+            if "actual" in df.columns:
+                counts = df["actual"].value_counts()
+                st.bar_chart(counts)
 
-    cases = load_test_cases()
-
-    if cases:
-        st.subheader("Test corpus preview")
-        preview = pd.DataFrame(cases)
-
-        columns = [
-            column
-            for column in [
-                "id",
-                "category",
-                "description",
-                "mode",
-                "expected",
+            st.subheader("Recent Evaluation Results")
+            columns = [
+                c for c in [
+                    "id", "category", "mode", "expected",
+                    "actual", "match", "response_reason"
+                ] if c in df.columns
             ]
-            if column in preview.columns
-        ]
-
-        st.dataframe(
-            preview[columns],
-            use_container_width=True,
-            hide_index=True,
+            st.dataframe(
+                df[columns],
+                width="stretch",
+                hide_index=True,
+            )
+    else:
+        st.info(
+            "No saved metrics found. Select 'Run live evaluation' "
+            "to evaluate the test suite."
         )
 
-
-# Results screen
-else:
-    results = st.session_state["results"]
-    metrics = st.session_state["metrics"]
-    findings = st.session_state.get("findings", [])
-
-    st.header("Evaluation overview")
-
-    columns = st.columns(4)
-
-    columns[0].metric(
-        "Test cases",
-        metrics.get("total_cases", len(results)),
-    )
-    columns[1].metric(
-        "Decision match rate",
-        display_percent(metrics.get("decision_match_rate_pct")),
-    )
-    columns[2].metric(
-        "Attack success rate",
-        display_percent(metrics.get("attack_success_rate_pct")),
-    )
-    columns[3].metric(
-        "False-positive rate",
-        display_percent(metrics.get("false_positive_rate_pct")),
-    )
-
-    st.subheader("Evaluation health")
-
-    health_columns = st.columns(3)
-
-    health_columns[0].metric(
-        "Valid responses",
-        metrics.get("valid_responses", 0),
-    )
-    health_columns[1].metric(
-        "Evaluation errors",
-        metrics.get("errors", 0),
-    )
-    health_columns[2].metric(
-        "Adversarial cases",
-        metrics.get("adversarial_cases", 0),
-    )
-
-    # Security findings
-    st.header("Security findings")
     st.caption(
-        "Findings are generated from evaluation outcomes using "
-        "configured rules. An empty list means no configured rule "
-        "was triggered; it does not prove the system is secure."
+        "Metrics describe the configured test suite only; "
+        "they do not prove complete real-world security."
     )
 
-    severity_order = ["Critical", "High", "Medium", "Low"]
+# ---------------- LIVE PLAYGROUND ----------------
 
-    severity_counts = {
-        severity: sum(
-            finding.get("severity") == severity
-            for finding in findings
-        )
-        for severity in severity_order
-    }
-
-    severity_columns = st.columns(4)
-
-    for column, severity in zip(severity_columns, severity_order):
-        column.metric(
-            f"{severity} findings",
-            severity_counts[severity],
-        )
-
-    if findings:
-        findings_df = pd.DataFrame(findings)
-
-        st.subheader("Findings and remediation")
-
-        finding_columns = [
-            "case_id",
-            "severity",
-            "title",
-            "description",
-            "observed_result",
-            "recommendation",
-        ]
-
-        st.dataframe(
-            findings_df[finding_columns],
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        st.download_button(
-            "Download findings CSV",
-            data=findings_df.to_csv(index=False).encode("utf-8"),
-            file_name="governiq_security_findings.csv",
-            mime="text/csv",
-        )
-
-        findings_json = json.dumps(
-            findings,
-            indent=2,
-            ensure_ascii=False,
-        )
-
-        st.download_button(
-            "Download findings JSON",
-            data=findings_json.encode("utf-8"),
-            file_name="governiq_security_findings.json",
-            mime="application/json",
-        )
-
-    else:
-        st.success(
-            "No findings were generated by the current rules "
-            "for this evaluation."
-        )
-
-    # Case filters
-    st.header("Case results")
-
-    df = pd.DataFrame(results)
-
-    if df.empty:
-        st.warning("The evaluation returned no test results.")
-    else:
-        for column, default in [
-            ("category", "uncategorized"),
-            ("actual", "UNKNOWN"),
-        ]:
-            if column not in df.columns:
-                df[column] = default
-
-        if "match" not in df.columns:
-            df["match"] = False
-
-        filter_columns = st.columns(3)
-
-        categories = sorted(
-            df["category"].fillna("uncategorized").astype(str).unique()
-        )
-        decisions = sorted(
-            df["actual"].fillna("UNKNOWN").astype(str).unique()
-        )
-
-        selected_category = filter_columns[0].selectbox(
-            "Category",
-            ["All"] + categories,
-        )
-
-        selected_decision = filter_columns[1].selectbox(
-            "Actual decision",
-            ["All"] + decisions,
-        )
-
-        selected_match = filter_columns[2].selectbox(
-            "Expected-decision match",
-            ["All", "Match", "Mismatch"],
-        )
-
-        filtered = df.copy()
-
-        if selected_category != "All":
-            filtered = filtered[
-                filtered["category"].fillna("uncategorized").astype(str)
-                == selected_category
-            ]
-
-        if selected_decision != "All":
-            filtered = filtered[
-                filtered["actual"].fillna("UNKNOWN").astype(str)
-                == selected_decision
-            ]
-
-        if selected_match == "Match":
-            filtered = filtered[filtered["match"] == True]  # noqa: E712
-        elif selected_match == "Mismatch":
-            filtered = filtered[filtered["match"] == False]  # noqa: E712
-
-        result_columns = [
-            column
-            for column in [
-                "id",
-                "category",
-                "mode",
-                "expected",
-                "actual",
-                "match",
-                "attack_success",
-                "response_reason",
-            ]
-            if column in filtered.columns
-        ]
-
-        st.dataframe(
-            filtered[result_columns],
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        st.download_button(
-            "Download filtered results CSV",
-            data=filtered.to_csv(index=False).encode("utf-8"),
-            file_name="governiq_red_team_results.csv",
-            mime="text/csv",
-        )
-
-        full_report = {
-            "metrics": metrics,
-            "results": results,
-            "findings": findings,
-        }
-
-        st.download_button(
-            "Download full evaluation JSON",
-            data=json.dumps(
-                full_report,
-                indent=2,
-                ensure_ascii=False,
-            ).encode("utf-8"),
-            file_name="governiq_red_team_report.json",
-            mime="application/json",
-        )
-
-    st.warning(
-        "An ALLOW decision on an adversarial case is a potential finding "
-        "to investigate, not proof of exploitability. Passing this test "
-        "corpus does not establish security."
+with playground_tab:
+    st.subheader("Test a Prompt")
+    st.write(
+        "Submit a prompt to the deployed GovernIQ API. "
+        "The gateway evaluates the request and returns a decision."
     )
+
+    with st.form("governance_form"):
+        tool = st.selectbox(
+            "Tool",
+            [
+                "search_policy",
+                "read_status",
+                "draft_report",
+                "shell_exec",
+                "delete_database",
+                "send_external_data",
+            ],
+        )
+
+        prompt = st.text_area(
+            "Prompt",
+            placeholder="Example: Find public information about AI governance policy.",
+            height=140,
+        )
+
+        mode = st.selectbox(
+            "Governance Mode",
+            ["Open", "Standard", "Strict", "Locked"],
+            index=1,
+        )
+
+        approved = st.checkbox(
+            "Approval has been granted for this request"
+        )
+
+        submitted = st.form_submit_button(
+            "Evaluate Request",
+            type="primary",
+        )
+
+    if submitted:
+        if not prompt.strip():
+            st.warning("Enter a prompt before submitting.")
+        else:
+            case = {
+                "id": "playground",
+                "tool": tool,
+                "input": prompt.strip(),
+                "mode": mode,
+                "approved": approved,
+            }
+
+            with st.spinner("Contacting GovernIQ..."):
+                result = evaluate_case(case, base_url=API_URL)
+
+            decision = result.get("decision", "ERROR")
+
+            if decision == "ALLOW":
+                st.success("Decision: ALLOW")
+            elif decision == "REVIEW":
+                st.warning("Decision: REVIEW")
+            elif decision == "DENY":
+                st.error("Decision: DENY")
+            else:
+                st.error("The gateway request failed.")
+
+            st.write("**Reason**")
+            st.write(result.get("reason", "No reason returned."))
+
+            st.write("**Response details**")
+            st.json(result)
+
+            if decision == "ALLOW":
+                st.info(
+                    "ALLOW means the gateway permitted this request. "
+                    "It does not mean the underlying action was executed."
+                )
+
+# ---------------- REPORTS ----------------
+
+with reports_tab:
+    st.subheader("Evaluation Reports")
+
+    csv_path = REPORTS / "latest_results.csv"
+    json_path = REPORTS / "latest_summary.json"
+
+    if csv_path.exists():
+        try:
+            df = pd.read_csv(csv_path)
+            st.dataframe(df, width="stretch", hide_index=True)
+
+            st.download_button(
+                "Download CSV Results",
+                data=csv_path.read_bytes(),
+                file_name="governiq_results.csv",
+                mime="text/csv",
+            )
+        except (ValueError, OSError) as exc:
+            st.error(f"Could not read CSV report: {exc}")
+    else:
+        st.info("No CSV report found. Run the evaluation first.")
+
+    if json_path.exists():
+        st.download_button(
+            "Download JSON Summary",
+            data=json_path.read_bytes(),
+            file_name="governiq_summary.json",
+            mime="application/json",
+        )
